@@ -1,5 +1,5 @@
 # FALLDETECTION – HỆ THỐNG PHÁT HIỆN TÉ NGÃ
-#   [BÁO CÁO](Report/lab3_report)
+#   [BÁO CÁO](Report/lab3_report.docx)
 **Nền tảng:** ESP32 DevKit V1 · MPU6050 · FreeRTOS · MQTT · Web Dashboard  
 **Link mô phỏng wokwi:**  https://wokwi.com/projects/480388212233985025  
 
