@@ -1,255 +1,201 @@
-# FALLGUARD – PHÁT HIỆN TÉ NGÃ ESP32 + MPU6050 + MQTT
+# FALLDETection – HỆ THỐNG PHÁT HIỆN TÉ NGÃ
+#   [BÁO CÁO](Report/lab3_report)
+**Nền tảng:** ESP32 DevKit V1 · MPU6050 · FreeRTOS · MQTT · Web Dashboard  
+**Link mô phỏng wokwi:**  https://wokwi.com/projects/480388212233985025  
 
-Bản mô phỏng học tập / prototype. Không phải thiết bị cảnh báo y tế đã được kiểm định.
+## 1. Giới thiệu
 
-## 1. Chức năng và kiến trúc
+FallGuard là mô hình phát hiện té ngã sử dụng ESP32 và cảm biến gia tốc – con quay hồi chuyển MPU6050. ESP32 thu thập dữ liệu chuyển động, xử lý thuật toán phát hiện té ngã và điều khiển LED/còi cảnh báo. Dữ liệu đồng thời được gửi qua MQTT đến một giao diện Web để theo dõi trạng thái và điều khiển các đầu ra trong chế độ thủ công.
 
-- ESP32 đọc MPU6050 qua I2C, mục tiêu 50 mẫu/giây, bằng tác vụ FreeRTOS riêng.
-- Đọc gia tốc Ax/Ay/Az, tốc độ góc Gx/Gy/Gz; tính độ lớn gia tốc, roll, pitch và độ nghiêng so với tư thế đứng đã hiệu chuẩn.
-- Serial Monitor hiển thị ở 115200 baud, mỗi khoảng 500 ms.
-- MQTT gửi số đo, trạng thái phát hiện, nguồn dữ liệu và trạng thái LED/còi mỗi khoảng 500 ms.
-- Web nhận MQTT qua WSS, hiển thị các thẻ HTML có class, hai biểu đồ, hai nút LED/còi ở Manual, nút xác nhận cảnh báo và hiệu chuẩn.
-- Auto/Manual không tắt thuật toán phát hiện. Nếu xác nhận sự kiện, cảnh báo tự động có ưu tiên cao nhất.
-- Phát hiện và cảnh báo cục bộ không phụ thuộc trang Web. Tác vụ lấy mẫu chạy riêng để giảm ảnh hưởng khi MQTT kết nối lại.
-- Không gửi email, SMS hay tự gọi cứu hộ. Không có phần mềm App native; dashboard Web thích ứng màn hình điện thoại.
+Dự án có thể chạy thử trên Wokwi. Dashboard Web có thể chạy cục bộ hoặc triển khai tĩnh bằng GitHub Pages.
 
-Không dùng tên, vị trí hoặc thông tin sức khỏe thật với broker công cộng của bản mô phỏng này.
+## 2. Chức năng và kiến trúc
 
-## 2. Tệp dự án
+### 2.1. Chức năng chính
 
-| Tệp | Vai trò |
-|---|---|
-| README.html | Trang hướng dẫn nhanh, có nút sao chép code từng tệp |
-| web/index.html | Dashboard Web |
-| web/styles.css | Giao diện thích ứng PC/điện thoại |
-| web/app.js | Nhận MQTT, vẽ biểu đồ và gửi lệnh có xác nhận |
-| web/mqtt-wire.js | Giao thức MQTT 3.1.1 qua WebSocket, không dùng CDN |
-| tests/ | Các kiểm tra thuật toán / giao thức / logic Web |
+- Đọc dữ liệu MPU6050 qua giao tiếp I2C, mục tiêu lấy mẫu 50 mẫu/giây.
+- Thu thập gia tốc ba trục `Ax`, `Ay`, `Az` và tốc độ góc ba trục `Gx`, `Gy`, `Gz`.
+- Tính gia tốc tổng, góc Roll, Pitch và độ nghiêng so với tư thế đứng đã hiệu chuẩn.
+- Hiển thị dữ liệu trên Serial Monitor ở tốc độ 115200 baud, chu kỳ hiển thị khoảng 500 ms.
+- Gửi số đo, trạng thái phát hiện, nguồn dữ liệu và trạng thái LED/còi lên MQTT khoảng mỗi 500 ms.
+- Dashboard Web nhận dữ liệu qua MQTT over WebSocket Secure (WSS), hiển thị các thẻ số liệu và hai biểu đồ.
+- Dashboard hỗ trợ xác nhận cảnh báo, hiệu chuẩn lại và điều khiển LED/còi khi ở chế độ Manual.
+- Thuật toán phát hiện té ngã vẫn hoạt động ở cả chế độ Auto và Manual. Khi có cảnh báo, đầu ra cảnh báo tự động được ưu tiên cao nhất.
+- Việc phát hiện và cảnh báo cục bộ không phụ thuộc vào trang Web. Tác vụ lấy mẫu cảm biến chạy riêng để giảm ảnh hưởng khi MQTT mất kết nối hoặc kết nối lại.
 
-Giải nén toàn bộ rồi mở tutorial.html. Khi mở dashboard cục bộ, giữ bốn tệp trong thư mục web cạnh nhau.
+Dự án không gửi email, SMS hoặc tự động gọi cứu hộ. Không có ứng dụng native cho điện thoại; dashboard Web có giao diện thích ứng với màn hình điện thoại.
 
-## 3. Kết nối Wokwi
+### 2.2. Luồng hoạt động
 
-| Thành phần | Chân | ESP32 / kết nối |
+```text
+MPU6050
+   │ I2C
+   ▼
+ESP32 – tác vụ đọc cảm biến
+   │
+   ├── Tính gia tốc, góc nghiêng và tốc độ góc
+   │
+   ▼
+Thuật toán xác minh té ngã
+   │
+   ├── Không phát hiện ──► Tiếp tục theo dõi
+   │
+   └── Xác nhận té ngã ──► LED + còi cảnh báo
+   │
+   ▼
+MQTT Broker
+   │
+   ▼
+Web Dashboard
+   ├── Hiển thị dữ liệu và biểu đồ
+   ├── Hiển thị trạng thái thiết bị/cảnh báo
+   └── Gửi lệnh điều khiển và xác nhận
+```
+
+## 3. Phần cứng và kết nối
+
+### 3.1. Danh sách linh kiện
+
+- ESP32 DevKit V1.
+- Cảm biến gia tốc và con quay hồi chuyển MPU6050.
+- LED đỏ và điện trở 220 Ω.
+- Buzzer piezo.
+- Hai nút nhấn: RESET/XÁC NHẬN và TEST FALL.
+
+### 3.2. Bảng kết nối
+
+| Thành phần | Chân linh kiện | ESP32 / kết nối |
 |---|---|---|
 | MPU6050 | VCC | 3V3 |
 | MPU6050 | GND | GND |
 | MPU6050 | SDA | GPIO21 |
 | MPU6050 | SCL | GPIO22 |
-| MPU6050 | AD0 | GND, chọn địa chỉ 0x68 |
-| MPU6050 | XDA, XCL, INT | Để trống trong bản này |
-| LED đỏ | Anode A | GPIO26 qua điện trở 220Ω |
-| LED đỏ | Cathode C | GND |
+| MPU6050 | AD0 | GND, chọn địa chỉ I2C `0x68` |
+| MPU6050 | XDA, XCL, INT | Để trống trong mô hình này |
+| LED đỏ | Anode (A) | GPIO26 qua điện trở 220 Ω |
+| LED đỏ | Cathode (C) | GND |
 | Buzzer piezo | Chân 2 (+) | GPIO27 |
 | Buzzer piezo | Chân 1 (-) | GND |
-| RESET / XÁC NHẬN | Hai chân khác hàng | GPIO25 và GND |
-| TEST FALL | Hai chân khác hàng | GPIO32 và GND |
+| Nút RESET/XÁC NHẬN | Hai chân khác hàng | GPIO25 và GND |
+| Nút TEST FALL | Hai chân khác hàng | GPIO32 và GND |
 
-Hai nút dùng INPUT_PULLUP; nhấn = LOW. Nhấn giữ ít nhất 0,1 giây để qua bộ lọc nhấn 40 ms. Hai chân cùng một hàng của nút nhấn 4 chân nối sẵn với nhau, không dùng chúng như hai đầu công tắc.
+**Hình 1. Sơ đồ mạch kết nối trên Wokwi**
 
-MPU6050 mặc định 0x68. Nếu nối AD0 lên VCC thì địa chỉ đổi 0x69; muốn dùng cấu hình đó phải đổi MPU_ADDR trong code. Module thật phải có mức kéo lên I2C phù hợp logic 3,3 V; làm theo sơ đồ module cụ thể.
+> **Vị trí chèn hình sơ đồ mạch Wokwi**
+>
+> *(Chèn ảnh sơ đồ mạch tại đây.)*
 
-## 4. Công thức và đơn vị
+Hai nút nhấn sử dụng `INPUT_PULLUP`; khi nhấn, chân đọc được mức `LOW`. Mạch có bộ lọc nhấn 40 ms; thao tác nhấn cần duy trì tối thiểu khoảng 0,1 giây. Với nút nhấn 4 chân, hai chân nằm cùng một hàng thường đã nối điện với nhau; cần sử dụng hai chân khác hàng làm hai đầu công tắc.
 
-Gia tốc tổng:
+MPU6050 mặc định sử dụng địa chỉ `0x68` khi chân AD0 nối GND. Nếu AD0 nối VCC, địa chỉ chuyển thành `0x69` và cần cập nhật hằng `MPU_ADDR` trong chương trình. Với module thật, cần kiểm tra mạch kéo lên I2C và bảo đảm mức logic phù hợp 3,3 V theo sơ đồ module.
 
-A_g = sqrt(Ax_g² + Ay_g² + Az_g²)
+## 4. Nguyên lý tính toán
 
-Gia tốc gồm trọng lực: cảm biến đứng yên thường đọc khoảng 1g, không phải 0g. 1g = 9,80665 m/s². Ngưỡng 2,5g tương đương khoảng 24,52 m/s².
+### 4.1. Gia tốc tổng
 
-Roll = atan2(Ay, Az) × 180/π
+Gia tốc tổng được tính từ ba thành phần gia tốc:
 
-Pitch = atan2(-Ax, sqrt(Ay² + Az²)) × 180/π
+\[
+A_g = \sqrt{A_{x,g}^{2} + A_{y,g}^{2} + A_{z,g}^{2}}
+\]
 
-Tạo vector đơn vị u = a / |a|. Khi hiệu chuẩn, lưu vector u0 ở tư thế đứng. Độ nghiêng = acos(clamp(u · u0, -1, 1)) × 180/π.
+Gia tốc đo được bao gồm thành phần trọng lực. Vì vậy, khi cảm biến đứng yên, độ lớn gia tốc thường xấp xỉ `1g`, không phải `0g`. Quy đổi: `1g = 9,80665 m/s²`; ngưỡng `2,5g` tương đương khoảng `24,52 m/s²`.
 
-Độ đổi hướng sau va đập được tính bằng góc giữa vector gia tốc gần tĩnh sau va đập với một vector gần 0,5 giây trước va đập. Lịch sử hợp lệ được chọn trong khoảng 0,5–1,5 giây trước đó; nếu không có, dùng tư thế chuẩn.
+### 4.2. Góc Roll và Pitch
 
-Chỉ hiển thị góc trên Web khi độ lớn gia tốc trong 0,8–1,2g và đã hiệu chuẩn. Khi đang va đập mạnh, góc từ gia tốc không đáng tin; Web hiển thị dấu —. Serial vẫn in giá trị góc gần tĩnh gần nhất kèm valid=0. Không lấy số góc đó để xác nhận tư thế trong lúc va đập.
+\[
+Roll = atan2(A_y, A_z) \times \frac{180}{\pi}
+\]
 
-**Gyro là tốc độ góc (°/s), không phải góc (°).** Kéo thanh trượt Rotation trong Wokwi không trực tiếp đặt một góc nghiêng. Góc trong bản này được ước lượng từ hướng trọng lực ở trạng thái gần tĩnh; không tích phân gyro để tạo yaw, không dùng bộ lọc hợp nhất tư thế đầy đủ.
+\[
+Pitch = atan2(-A_x, \sqrt{A_y^2 + A_z^2}) \times \frac{180}{\pi}
+\]
 
-MPU6050 được cấu hình ±8g, độ nhạy 4096 LSB/g; gyro ±500°/s, độ nhạy 65,5 LSB/(°/s). Đọc I2C trực tiếp bằng Wire để kiểm tra số byte và lỗi giao tiếp, không cần thư viện MPU6050 ngoài.
+### 4.3. Độ nghiêng so với tư thế chuẩn
 
-## 5. Thuật toán xác nhận sự kiện
+Tạo vector đơn vị từ vector gia tốc:
 
-### Hiệu chuẩn ban đầu
+\[
+\mathbf{u} = \frac{\mathbf{a}}{|\mathbf{a}|}
+\]
 
-Giữ cảm biến đứng yên ở tư thế đại diện người đang đứng khoảng 2 giây. Wokwi giữ mặc định Ax=0, Ay=0, Az=1g, các gyro=0.
+Khi hiệu chuẩn, lưu vector chuẩn `u0` ở tư thế đứng. Độ nghiêng được tính theo:
 
-Cần khoảng 100 mẫu liên tục: tổng gia tốc 0,9–1,1g, gyro <8°/s và đổi hướng giữa hai mẫu ≤3°. Khi đạt yêu cầu, lưu tư thế chuẩn rồi chuyển READY. Đây là hiệu chuẩn tư thế, không phải hiệu chuẩn đầy đủ sai số cảm biến theo nhiều trục.
+\[
+Tilt = acos(clamp(\mathbf{u} \cdot \mathbf{u_0}, -1, 1)) \times \frac{180}{\pi}
+\]
 
-### Điều kiện báo động
+Độ đổi hướng sau va đập được tính bằng góc giữa vector gia tốc gần tĩnh sau va đập và vector gần 0,5 giây trước va đập. Lịch sử hợp lệ được chọn trong khoảng 0,5–1,5 giây trước đó; nếu không có dữ liệu phù hợp thì dùng tư thế chuẩn.
 
-1. **Va đập:** A_g ≥2,5g → chuyển VERIFY, lưu đỉnh va đập và hướng trước va đập.
-2. **Tư thế sau va đập:** trong cửa sổ 2,5 giây, độ nghiêng so với chuẩn ≥60°, độ đổi hướng so với trước va đập ≥45°.
-3. **Giữ tư thế:** các điều kiện trên liên tục ít nhất 1,2 giây, A_g trong 0,8–1,2g và độ lớn gyro <30°/s.
-4. Nếu thỏa → ALARM, tăng bộ đếm sự kiện một lần, LED nhấp nháy, còi 1.800Hz kêu ngắt quãng.
-5. Nếu không thỏa trong 2,5 giây → về READY, không báo động.
+### 4.4. Giới hạn của phép đo
 
-Nếu khoảng cách giữa hai mẫu vượt 100 ms, hủy quá trình xác minh đang có để không giả coi thời gian mất mẫu là bất động. Nếu không có mẫu hợp lệ quá 200 ms hoặc giao tiếp I2C lỗi, báo SENSOR_FAULT. Lỗi cảm biến không được xem là “không té ngã”.
+- Web chỉ hiển thị góc khi gia tốc tổng nằm trong khoảng `0,8–1,2g` và cảm biến đã hiệu chuẩn.
+- Khi va đập hoặc chuyển động mạnh, góc suy ra từ gia tốc không đáng tin cậy; Web hiển thị `—` thay vì dùng góc đó để kết luận.
+- Serial vẫn in giá trị góc gần tĩnh gần nhất kèm `valid=0` khi mẫu hiện tại không hợp lệ.
+- Gyroscope đo **tốc độ góc** (°/s), không phải góc (°). Thay đổi thanh trượt Rotation trong Wokwi không trực tiếp đặt góc nghiêng.
+- Dự án ước lượng góc từ hướng trọng lực ở trạng thái gần tĩnh; không tích phân gyro để tạo góc yaw và không sử dụng bộ lọc hợp nhất tư thế đầy đủ.
 
-Cảnh báo ALARM được giữ đến khi người dùng nhấn RESET / Xác nhận trên mạch hoặc Web. Cảm biến lỗi sau khi báo động không tự xóa báo động. Bộ đếm sự kiện gồm cả TEST, chỉ lưu trong RAM và về 0 khi khởi động lại.
+MPU6050 được cấu hình dải gia tốc ±8g, độ nhạy 4096 LSB/g; dải gyro ±500°/s, độ nhạy 65,5 LSB/(°/s). Chương trình đọc I2C trực tiếp bằng `Wire`, có kiểm tra số byte và lỗi giao tiếp; không yêu cầu thư viện Adafruit MPU6050.
 
-Dải ngưỡng này do dự án chọn để minh họa nguyên lý; không phải bộ ngưỡng được chứng nhận hoặc bảo đảm độ nhạy/đặc hiệu ngoài đời. Có thể bỏ sót ngã nhẹ, trượt ngồi, hoặc ngã không đổi tư thế đủ lớn; có thể báo nhầm khi làm rơi thiết bị hoặc va chạm rồi nằm xuống. Cảm biến phải gắn chắc, thường ở thân/eo; không thể áp dụng trực tiếp các ngưỡng này cho mọi vị trí đeo.
+## 5. Thuật toán phát hiện té ngã
 
-### Auto / Manual
+### 5.1. Hiệu chuẩn ban đầu
 
-- Auto: khi chưa có ALARM, LED và còi tắt. Khi ALARM, LED chớp theo chu kỳ 0,5 giây, còi kêu 350 ms mỗi giây.
-- Manual: hai nút Web bật/tắt LED và còi độc lập; cả hai có thể cùng bật. Tự trở lại Auto sau 60 giây không có lệnh mới.
-- Phát hiện té ngã luôn chạy trong Manual. ALARM tự động ghi đè đầu ra Manual; không thể tắt riêng còi bằng nút Manual khi ALARM. Dùng Xác nhận để xóa cảnh báo.
-- Lỗi cảm biến tắt các yêu cầu Manual, LED chớp ngắn mỗi 1,5 giây để báo lỗi, còi không kêu. Nếu ALARM đã được giữ từ trước thì cảnh báo đó tiếp tục.
-- Các trường led/buzzer trên MQTT là yêu cầu hoạt động logic. Trong ALARM chúng luôn true, còn chân GPIO nhấp nháy/kêu ngắt quãng theo nhịp; Web mô tả đúng kiểu hoạt động thay vì nháy theo từng gói.
+Giữ cảm biến đứng yên ở tư thế đại diện cho trạng thái đứng trong khoảng 2 giây. Trong Wokwi, trạng thái mặc định là `Ax=0`, `Ay=0`, `Az=1g`, các giá trị gyro bằng 0.
 
-## 6. Chạy dự án trên Wokwi
+Điều kiện hiệu chuẩn cần khoảng 100 mẫu liên tục thỏa mãn:
 
-1. Mở https://wokwi.com/projects/new/esp32.
-2. Dán nội dung wokwi/sketch.ino thay toàn bộ code mẫu của tab sketch.ino.
-3. Dán nội dung wokwi/diagram.json thay nội dung tab diagram.json. Mạch sẽ tự hiện.
-4. Menu cạnh các tab → New file… → tạo chính xác FallDetector.h; dán nội dung tệp cùng tên.
-5. Tạo libraries.txt với hai dòng:
+- Gia tốc tổng trong khoảng `0,9–1,1g`.
+- Độ lớn gyro nhỏ hơn `8°/s`.
+- Độ đổi hướng giữa hai mẫu không quá `3°`.
 
-```
-PubSubClient
-ArduinoJson
-```
+Khi đạt yêu cầu, hệ thống lưu tư thế chuẩn và chuyển sang trạng thái `READY`. Đây là hiệu chuẩn tư thế, không phải hiệu chuẩn đầy đủ sai số cảm biến theo nhiều trục.
 
-Hoặc dùng Library Manager thêm hai thư viện tương ứng. Wire và WiFi có sẵn trong ESP32. Không cần Adafruit_MPU6050, không cần Blynk.
+### 5.2. Điều kiện xác minh và báo động
 
-6. Bấm tam giác xanh Start the simulation; chờ hàng đợi biên dịch.
-7. Serial Monitor baud 115200. Giữ MPU ở giá trị mặc định khoảng 2 giây mô phỏng.
-8. Tìm trạng thái READY, A=1.00g, tilt=0.0deg, valid=1 và MQTT connecting... OK.
-9. Mở dashboard. Giữ base topic mặc định như bên dưới, chờ hai gói mới để hiện ESP32 trực tuyến.
-10. Lưu dự án vào tài khoản Wokwi của bạn nếu muốn có đường dẫn dùng lại.
-
-Bản đã chạy dùng ESP32 DevKit V1, MPU6050 I2C 0x68. Khi bắt đầu, có thể thấy trạng thái CALIBRATING trước READY; đây là bình thường.
-
-## 7. Thử nhanh bằng nút TEST
-
-Đây là cách lặp lại bài thử thuận tiện, không yêu cầu chỉnh nhiều thanh trượt trong 2,5 giây.
-
-1. Để MPU ở mặc định (0,0,1g), gyro=0; chờ READY.
-2. Nhấn giữ nút TEST FALL màu xanh dương khoảng 0,1–0,2 giây.
-3. ESP32 tạo chuỗi dữ liệu thử trong 5 giây: đứng yên → 0,2g trong 120ms → va đập 3g trong 60ms → nằm nghiêng 90°, giữ yên.
-4. Serial ghi nguồn TEST_FALL. Sau va đập và đủ 1,2 giây tư thế ổn định, chuyển ALARM; LED đỏ nhấp nháy và còi kêu ngắt quãng.
-5. Hết 5 giây tự trở về dữ liệu MPU6050, nhưng báo động vẫn giữ. MQTT có alarm_source=TEST_FALL để Web vẫn ghi rõ cảnh báo do TEST.
-6. Nhấn RESET màu xanh lá hoặc Xác nhận trên Web để tắt báo động.
-
-Nút TEST thay đầu vào thuật toán bằng chuỗi dữ liệu trong phần mềm; không làm phần cứng tự chuyển động. Nó kiểm tra thuật toán, đầu ra và đường hiển thị, không chứng minh khả năng phát hiện trên cơ thể thật. Khi dùng làm thiết bị theo dõi thật, đặt ALLOW_TEST_INPUT=false và bỏ nút TEST khỏi giao diện vận hành.
-
-Các lệnh Serial (gõ vào ô Serial Monitor rồi Enter):
-
-| Lệnh | Kết quả dự kiến |
-|---|---|
-| TEST_FALL | Chuỗi va đập + nghiêng + giữ yên → ALARM |
-| TEST_BUMP | Va đập rồi trở lại đứng → không ALARM |
-| TEST_TILT | Nghiêng dần 90° nhưng không va đập → không ALARM |
-| RESET | Xóa cảnh báo, về Auto và đọc MPU thật |
-| LIVE | Tương tự RESET, dừng TEST |
-| CALIBRATE | Lấy lại tư thế chuẩn; chỉ khi không ALARM và cảm biến hợp lệ |
-
-Web có ba nút TEST tương đương. TEST không nhận nếu chưa hiệu chuẩn, đang ALARM hoặc đang chạy một TEST khác. Trở về mặc định trước mỗi bài thử để diễn giải kết quả rõ ràng.
-
-## 8. Thử dữ liệu cảm biến bằng thanh trượt Wokwi
-
-Bấm MPU6050 để mở các thanh trượt. Gia tốc từng trục trên giao diện Wokwi có thể giới hạn ±2g; tổng ba trục vẫn có thể lớn hơn 2,5g. Firmware đã chọn dải đo ±8g để không bị cắt ở 2g mỗi trục.
-
-| Tình huống | Ax, Ay, Az (g) | Kết quả |
+| Bước | Điều kiện | Hành động |
 |---|---|---|
-| Đứng yên, hiệu chuẩn | 0, 0, 1 | A≈1g, tilt≈0°, READY |
-| Nằm nghiêng chỉ bằng đổi hướng | 1, 0, 0 | A≈1g, tilt≈90°; không có va đập nên không ALARM |
-| Va đập lớn đa trục | 2, 2, 1 | A≈3g → VERIFY |
-| Sau va đập chuyển nhanh sang nằm | 1, 0, 0 | Nếu thao tác đủ nhanh và giữ ổn định trong cửa sổ, ALARM |
-| Quay gyro X=90°/s | Ax/Ay/Az giữ gần 1g | Serial gyro≈90°/s; đây không phải đặt góc =90° |
+| 1. Va đập | `A_g ≥ 2,5g` | Chuyển sang `VERIFY`, lưu đỉnh va đập và hướng trước va đập |
+| 2. Tư thế sau va đập | Trong cửa sổ 2,5 giây, độ nghiêng so với chuẩn `≥ 60°` và độ đổi hướng so với trước va đập `≥ 45°` | Tiếp tục xác minh |
+| 3. Giữ tư thế | Các điều kiện trên liên tục ít nhất 1,2 giây; `A_g` trong `0,8–1,2g`; độ lớn gyro `< 30°/s` | Xác nhận trạng thái |
+| 4. Báo động | Tất cả điều kiện xác minh được thỏa mãn | Chuyển `ALARM`, tăng bộ đếm sự kiện một lần, LED nhấp nháy và còi 1.800 Hz kêu ngắt quãng |
+| 5. Hủy xác minh | Không thỏa điều kiện trong cửa sổ 2,5 giây | Trở về `READY`, không phát báo động |
 
-Thao tác tay có thể vượt cửa sổ 2,5 giây và không báo động. Dùng TEST_FALL để có chuỗi thử định thời chính xác. Không tăng ngưỡng thời gian chỉ để che việc thao tác chậm nếu đang trình bày thuật toán cho chuyển động thật.
+Nếu khoảng cách giữa hai mẫu vượt 100 ms, quá trình xác minh đang diễn ra bị hủy để tránh xem khoảng thời gian mất mẫu là thời gian bất động. Nếu không có mẫu hợp lệ quá 200 ms hoặc giao tiếp I2C lỗi, hệ thống báo `SENSOR_FAULT`. Lỗi cảm biến không được xem là trạng thái “không té ngã”.
 
-## 9. MQTT và dashboard
+Trạng thái `ALARM` được giữ cho đến khi người dùng nhấn RESET trên mạch hoặc xác nhận trên Web. Lỗi cảm biến xuất hiện sau khi đã báo động không tự xóa trạng thái báo động. Bộ đếm sự kiện bao gồm cả các bài TEST, chỉ lưu trong RAM và trở về 0 sau khi khởi động lại.
 
-| Mục | Giá trị mặc định |
+**Giới hạn thuật toán:** Các ngưỡng trên do dự án lựa chọn để minh họa nguyên lý, không phải bộ ngưỡng được chứng nhận. Hệ thống có thể bỏ sót ngã nhẹ, trượt ngồi hoặc ngã không làm thay đổi tư thế đủ lớn; cũng có thể báo nhầm khi thiết bị bị làm rơi hoặc có va chạm rồi nằm xuống. Cảm biến cần được gắn chắc ở vị trí phù hợp, thường là vùng thân/eo. Không thể áp dụng trực tiếp các ngưỡng này cho mọi vị trí đeo.
+
+### 5.3. Chế độ Auto và Manual
+
+| Chế độ / trạng thái | Hoạt động |
 |---|---|
-| Wi-Fi mô phỏng | Wokwi-GUEST, mật khẩu rỗng |
-| Broker | broker.hivemq.com |
-| ESP32 | TCP 1883 |
-| Web | wss://broker.hivemq.com:8884/mqtt |
-| Base topic | fallguard/hang-20261015-f4b628 |
-| /state | ESP32 publish JSON, retained |
-| /availability | online/offline, retained và Last Will |
-| /cmd | Web gửi JSON, KHÔNG retained |
+| Auto, không có `ALARM` | LED và còi tắt |
+| Auto, có `ALARM` | LED nhấp nháy theo chu kỳ 0,5 giây; còi kêu 350 ms mỗi giây |
+| Manual | Hai nút Web điều khiển LED và còi độc lập; có thể bật đồng thời |
+| Manual không có lệnh mới trong 60 giây | Tự trở lại Auto |
+| Có `ALARM` trong Manual | Cảnh báo tự động ghi đè lệnh Manual; cần xác nhận để xóa cảnh báo |
+| `SENSOR_FAULT` | Hủy yêu cầu Manual; LED nháy ngắn mỗi 1,5 giây để báo lỗi, còi không kêu. Nếu `ALARM` đã được giữ từ trước thì cảnh báo tiếp tục |
 
-Base topic phải giống BASE_TOPIC trong sketch. Mỗi nhóm dùng mã riêng để tránh trộn dữ liệu. Topic không phải mật khẩu; broker công cộng không có phân quyền cho mô hình này.
+Các trường `led` và `buzzer` trên MQTT biểu diễn yêu cầu hoạt động logic. Trong `ALARM`, chúng luôn là `true`, trong khi chân GPIO thực tế nhấp nháy hoặc phát âm theo chu kỳ. Dashboard mô tả trạng thái hoạt động theo logic này, không cập nhật theo từng lần bật/tắt xung GPIO.
 
-Web tự nối broker. Kết nối broker thành công chưa có nghĩa ESP32 trực tuyến: cần hai gói state có thời gian tăng trong cùng session. Dữ liệu cũ trên broker không mở khóa nút điều khiển. Quá 8 giây thực không nhận gói mới thì khóa điều khiển, vẫn đánh dấu các số cũ rõ ràng.
+## 6. Xử lý lỗi thường gặp
 
-Chọn Thủ công, đợi ESP32 xác nhận rồi dùng Bật LED/Bật còi. Web không tự đổi trạng thái thành “đã bật” trước xác nhận. Sau 10 giây không nhận xác nhận, báo chưa có xác nhận. Phiên MQTT được đổi ngẫu nhiên mỗi lần ESP32 kết nối lại để bỏ lệnh retained từ kết nối trước. Đây không phải cơ chế xác thực an toàn.
-
-Hai biểu đồ giữ tối đa 120 mẫu trong phiên mở trang. Đồ thị gia tốc có điểm cam là đỉnh giữa hai bản tin để đỉnh xung ngắn không mất hoàn toàn khi chỉ gửi mỗi 500ms. Góc được để trống trong giai đoạn động mạnh; không nối các điểm qua mẫu góc không hợp lệ.
-
-Ví dụ lệnh bật LED, chỉ trong Manual:
-
-```json
-{"id":"fg-unique-id","session":"1234567890abcdef","action":"led","value":true}
-```
-
-Phải dùng session thật vừa nhận, không dùng chuỗi ví dụ. Các action hỗ trợ:
-
-| action | value |
+| Hiện tượng | Nguyên nhân / cách xử lý |
 |---|---|
-| mode | AUTO / MANUAL |
-| led | true / false |
-| buzzer | true / false |
-| ack | true |
-| calibrate | true |
-| test | FALL / BUMP / TILT |
-
-Không dùng cùng topic này cho dữ liệu vườn cây. Hai dự án độc lập.
-
-## 10. Deploy dashboard lên GitHub Pages
-
-Workflow `.github/workflows/deploy-pages.yml` tự publish riêng thư mục `web/`; firmware, test và tài liệu không được đưa lên Pages.
-
-1. Tạo repository GitHub và push toàn bộ dự án lên nhánh `main` hoặc `master`.
-2. Trong repository, vào **Settings → Pages** và chọn **GitHub Actions** ở mục Build and deployment.
-3. Mở tab **Actions**, chạy workflow **Deploy dashboard to GitHub Pages** (hoặc push một thay đổi trong `web/`).
-4. Chờ workflow hoàn tất; URL dashboard được hiển thị trong job deploy. URL thường có dạng `https://<owner>.github.io/<repository>/`.
-5. Mở URL đó qua HTTPS, giữ broker mặc định `wss://broker.hivemq.com:8884/mqtt` và xác nhận Base topic trùng với `BASE_TOPIC` trong `wokwi/sketch.ino`.
-6. Chạy Wokwi, chờ Serial báo `MQTT connecting... OK`, rồi chờ dashboard nhận hai bản tin liên tiếp để hiện **ESP32 trực tuyến**.
-
-Dashboard tự kết nối MQTT khi mở trang. Deploy trang web không khởi động ESP32/Wokwi và không tạo dữ liệu nếu thiết bị chưa publish. Trình duyệt và thiết bị phải cùng broker, cùng base topic; topic mặc định hiện tại là `fallguard/hang-20261015-f4b628`.
-
-GitHub Pages chỉ phục vụ dashboard tĩnh. Broker HiveMQ ở cấu hình mặc định là broker công cộng không có ACL: topic không phải mật khẩu, người khác có thể xem hoặc gửi dữ liệu/lệnh. Chỉ dùng dữ liệu mô phỏng, không gửi dữ liệu cá nhân; với triển khai thật cần broker riêng có TLS, xác thực và ACL. Không chia sẻ lệnh điều khiển trên topic công cộng.
-
-## 11. Lỗi thường gặp
-
-| Hiện tượng | Xử lý |
-|---|---|
-| FallDetector.h: No such file | Tạo tab đúng tên, phân biệt chữ hoa/thường; không đặt .h.txt |
-| Không tìm thấy PubSubClient / ArduinoJson | Kiểm tra libraries.txt hoặc Library Manager |
-| SENSOR_FAULT / số không đổi | Kiểm tra MPU VCC/GND, SDA21/SCL22, AD0 nối GND, địa chỉ 0x68 |
-| CALIBRATING không kết thúc | Đặt Ax=0 Ay=0 Az=1, tất cả gyro=0, giữ yên 2 giây mô phỏng |
-| Đổi Rotation nhưng góc không đổi như mong đợi | Rotation là °/s; đổi hướng vector gia tốc để mô phỏng tư thế gần tĩnh |
-| Chỉ nghiêng 90° mà không báo | Đúng: cần cả va đập trước đó và các điều kiện thời gian |
-| Chỉ gõ/va cảm biến mà không báo | Đúng nếu không có tư thế sau va đập phù hợp |
-| TEST bị từ chối | Đợi READY, xác nhận cảnh báo cũ, đợi TEST trước kết thúc |
-| Sau TEST hết 5 giây còi vẫn kêu | ALARM được giữ; bấm RESET/Xác nhận |
-| Bấm tắt còi Manual khi ALARM không được | Cảnh báo tự động có ưu tiên cao hơn; dùng nút Xác nhận |
-| Web có MQTT nhưng không ESP32 trực tuyến | Chạy Wokwi, xem MQTT OK, kiểm tra cùng base topic và chờ 2 gói |
-| Nút bị mờ | Cần thiết bị mới trực tuyến, cảm biến hợp lệ, hiệu chuẩn xong; LED/còi cần Manual và không ALARM |
-| Dữ liệu MQTT đến chậm | Wokwi có thể chạy chậm hơn thời gian thực; kiểm tra đồng hồ mô phỏng và Internet |
-| Mất broker | Auto/đọc cảm biến vẫn chạy cục bộ; broker công cộng không bảo đảm uptime |
-| Trễ/mất mẫu >100ms | Xem max_sample_gap_ms và missed_samples; mô hình có thể bỏ lỡ xung, cần đánh giá hiệu năng/FIFO trước dùng thật |
-
-## 12. Khi làm phần cứng
-
-Dùng mạch nguồn ổn định, gắn cảm biến chắc vào vị trí đã chọn, bảo vệ dây và vỏ. Piezo nhỏ có thể điều khiển bằng GPIO theo thông số linh kiện; loa điện trở thấp/còi dòng lớn phải dùng transistor hoặc driver, không đấu trực tiếp GPIO. Kiểm tra giới hạn dòng và cấp nguồn theo module thực tế.
-
-Dùng broker riêng có TLS, tài khoản và ACL cho triển khai thật; thêm giám sát pin, mất kết nối, hỏng cảm biến, thời gian phát hiện và đường xác nhận hỗ trợ độc lập. Bản hiện tại không có lưu sự kiện bền vững, thông báo tới người chăm sóc hoặc bảo đảm thông báo được nhận.
-
-Không tự ngã, làm người khác ngã hoặc tháo bỏ phương án hỗ trợ sẵn có để thử thiết bị. Sử dụng chuỗi dữ liệu mô phỏng. Đánh giá với dữ liệu chuyển động có gán nhãn và quy trình phù hợp trước khi đưa ra bất kỳ tuyên bố về độ nhạy hoặc độ đặc hiệu.
-
-## 13. Lience
-
-
-- Bagalà và cộng sự (2012), đánh giá thuật toán trên té ngã thực tế: https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0037062
-
-Nguồn nghiên cứu giúp giải thích nguyên lý và giới hạn; không phải bằng chứng kiểm định bộ ngưỡng hoặc sản phẩm này.
+| `FallDetector.h: No such file` | Tạo tab đúng tên `FallDetector.h`, phân biệt chữ hoa/thường; không để tên thành `.h.txt`. |
+| Không tìm thấy `PubSubClient` hoặc `ArduinoJson` | Kiểm tra `libraries.txt` hoặc cài thư viện bằng Library Manager. |
+| `SENSOR_FAULT` hoặc số đo không đổi | Kiểm tra VCC/GND, SDA GPIO21, SCL GPIO22, AD0 nối GND và địa chỉ `0x68`. |
+| `CALIBRATING` không kết thúc | Đặt `Ax=0`, `Ay=0`, `Az=1`, các trục gyro bằng 0 và giữ cảm biến yên khoảng 2 giây mô phỏng. |
+| Thay đổi Rotation nhưng góc không như mong đợi | Rotation biểu diễn °/s; thay đổi vector gia tốc để mô phỏng tư thế gần tĩnh. |
+| Chỉ nghiêng 90° nhưng không báo động | Đây là hành vi dự kiến: thuật toán yêu cầu có va đập trước đó và các điều kiện thời gian tương ứng. |
+| Va/chạm cảm biến nhưng không báo động | Kiểm tra xem sau va đập có tư thế phù hợp và có giữ ổn định đủ thời gian hay không. |
+| TEST bị từ chối | Đợi `READY`, xác nhận cảnh báo cũ và đợi bài TEST trước kết thúc. |
+| Hết TEST 5 giây nhưng còi vẫn kêu | `ALARM` được giữ; nhấn RESET trên mạch hoặc Xác nhận trên Web. |
+| Không thể tắt còi bằng Manual khi có `ALARM` | Cảnh báo tự động có ưu tiên cao hơn; cần xác nhận cảnh báo. |
+| Web đã kết nối MQTT nhưng ESP32 chưa trực tuyến | Kiểm tra Wokwi, Serial có báo MQTT OK không, Base topic có trùng không và chờ hai gói trạng thái mới. |
+| Nút điều khiển bị khóa | Cần thiết bị trực tuyến, cảm biến hợp lệ và hiệu chuẩn hoàn tất. LED/còi yêu cầu chế độ Manual và không có `ALARM`. |
+| MQTT nhận dữ liệu chậm | Wokwi có thể chạy chậm hơn thời gian thực; kiểm tra đồng hồ mô phỏng và kết nối Internet. |
+| Mất kết nối broker | Đọc cảm biến và cảnh báo Auto vẫn chạy cục bộ; broker công cộng không bảo đảm thời gian hoạt động. |
+| Trễ hoặc mất mẫu trên 100 ms | Theo dõi `max_sample_gap_ms` và `missed_samples`; cần đánh giá hiệu năng/FIFO trước khi dùng thật. |
